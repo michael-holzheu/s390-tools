@@ -35,28 +35,29 @@
  *
  */
 
+#include <err.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
+#include <linux/limits.h>
+#include <locale.h>
+#include <stdarg.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdarg.h>
-#include <err.h>
-#include <errno.h>
-#include <locale.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <stdbool.h>
-#include <limits.h>
-#include <linux/limits.h>
-#include <sys/sysmacros.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
+#include <sys/types.h>
+#include <unistd.h>
 
-#include "lib/util_base.h"
-#include "lib/util_list.h"
-#include "lib/util_libc.h"
-#include "lib/util_file.h"
 #include "lib/dasd_sys.h"
+#include "lib/util_base.h"
+#include "lib/util_file.h"
+#include "lib/util_libc.h"
+#include "lib/util_list.h"
+#include "lib/zt_common.h"
 
 struct target_status {
 	char *path;
@@ -129,8 +130,7 @@ enum target_type {
 };
 
 
-static void
-get_type_name(char *name, unsigned short type)
+static void get_type_name(char *name, unsigned short type)
 {
 	switch (type) {
 	case DEV_TYPE_SCSI:
@@ -151,12 +151,11 @@ get_type_name(char *name, unsigned short type)
 }
 
 
-static FILE *
-execute_command_and_get_output_stream(const char *fmt, ...)
+static FILE *execute_command_and_get_output_stream(const char *fmt, ...)
 {
-	char *cmd;
-	va_list ap;
 	FILE *stream;
+	va_list ap;
+	char *cmd;
 
 	va_start(ap, fmt);
 	util_vasprintf(&cmd, fmt, ap);
@@ -171,8 +170,8 @@ execute_command_and_get_output_stream(const char *fmt, ...)
 }
 
 
-static inline struct target_data *
-target_data_new(unsigned int maj, unsigned int min, unsigned int start)
+static struct target_data *target_data_new(unsigned int maj, unsigned int min,
+					   unsigned int start)
 {
 	struct target_data *td = util_malloc(sizeof(struct target_data));
 
@@ -182,14 +181,12 @@ target_data_new(unsigned int maj, unsigned int min, unsigned int start)
 	return td;
 }
 
-static inline void
-target_data_free(struct target_data *td)
+static void target_data_free(struct target_data *td)
 {
 	free(td);
 }
 
-static void
-target_data_list_free(struct util_list *data)
+static void target_data_list_free(struct util_list *data)
 {
 	struct target_data *td, *n;
 
@@ -200,9 +197,8 @@ target_data_list_free(struct util_list *data)
 	util_list_free(data);
 }
 
-static inline struct target *
-target_new(unsigned long start, unsigned long length, unsigned short type,
-		struct util_list *data)
+static struct target *target_new(unsigned long start, unsigned long length,
+				 unsigned short type, struct util_list *data)
 {
 	struct target *entry = util_malloc(sizeof(struct target));
 
@@ -214,106 +210,97 @@ target_new(unsigned long start, unsigned long length, unsigned short type,
 	return entry;
 }
 
-static void
-target_free(struct target *target)
+static void target_free(struct target *target)
 {
-	struct target_data *e, *n;
+	struct target_data *td, *n;
 
-	util_list_iterate_safe(target->data, e, n) {
-		util_list_remove(target->data, e);
-		target_data_free(e);
+	util_list_iterate_safe(target->data, td, n) {
+		util_list_remove(target->data, td);
+		target_data_free(td);
 	}
 	util_list_free(target->data);
 	free(target);
 }
 
-static inline unsigned long
-target_get_start(struct target *t)
+static unsigned long target_get_start(struct target *target)
 {
-	struct target_data *td = util_list_start(t->data);
+	struct target_data *td = util_list_start(target->data);
 
 	return td->start;
 }
 
-static inline void
-target_get_major_minor(struct target *t, unsigned int *maj, unsigned int *min)
+static void target_get_major_minor(struct target *target, unsigned int *major,
+				   unsigned int *minor)
 {
-	struct target_data *td = util_list_start(t->data);
+	struct target_data *td = util_list_start(target->data);
 
-	*maj = major(td->device);
-	*min = minor(td->device);
+	*major = major(td->device);
+	*minor = minor(td->device);
 }
 
-static struct target_entry *
-target_entry_new(dev_t dev, struct target *t)
+static struct target_entry *target_entry_new(dev_t dev, struct target *target)
 {
 	struct target_entry *te = util_malloc(sizeof(struct target_entry));
 
 	te->device = dev;
-	te->target = t;
+	te->target = target;
 
 	return te;
 }
 
-static inline void
-target_entry_free(struct target_entry *entry)
+static void target_entry_free(struct target_entry *entry)
 {
 	target_free(entry->target);
 	free(entry);
 }
 
-static struct target_entry *
-target_list_get_first_by_type(struct util_list *target_list,
-		unsigned short type)
+static struct target_entry *target_list_get_first_by_type(struct util_list *target_list, unsigned short type)
 {
-	struct target_entry *entry;
+	struct target_entry *te;
 
-	util_list_iterate(target_list, entry) {
-		if (entry->target->type == type)
-			return entry;
+	util_list_iterate(target_list, te) {
+		if (te->target->type == type)
+			return te;
 	}
 	return NULL;
 }
 
-static void
-target_list_free(struct util_list *target_list)
+static void target_list_free(struct util_list *target_list)
 {
-	struct target_entry *entry, *n;
+	struct target_entry *te, *n;
 
-	util_list_iterate_safe(target_list, entry, n) {
-		util_list_remove(target_list, entry);
-		target_entry_free(entry);
+	util_list_iterate_safe(target_list, te, n) {
+		util_list_remove(target_list, te);
+		target_entry_free(te);
 	}
 	util_list_free(target_list);
 }
 
-
-static void
-get_device_name(char *devname, dev_t dev)
+static void get_device_name(char *devname, dev_t dev)
 {
-	FILE *fd = NULL;
 	char *line = NULL;
+	FILE *fp = NULL;
 	size_t len = 0;
 	ssize_t read;
 
 	sprintf(devname, "%u:%u", major(dev), minor(dev));
 
-	fd = fopen(PARTITIONS_FILE, "r");
-	if (fd == NULL)
+	fp = fopen(PARTITIONS_FILE, "r");
+	if (fp == NULL)
 		return;
 
-	if (getline(&line, &len, fd) == -1) /* Ignore header */
+	if (getline(&line, &len, fp) == -1) /* Ignore header */
 		goto out;
-	if (getline(&line, &len, fd) == -1) /* Ignore empty line */
+	if (getline(&line, &len, fp) == -1) /* Ignore empty line */
 		goto out;
 
-	while ((read = getline(&line, &len, fd)) != -1) {
+	while ((read = getline(&line, &len, fp)) != -1) {
 		char buf[BDEVNAME_SIZE];
-		unsigned int mj, mn;
+		unsigned int major, minor;
 
-		if (sscanf(line, "%d %d %*u %s", &mj, &mn, buf) < 3)
+		if (sscanf(line, "%d %d %*u %s", &major, &minor, buf) < 3)
 			continue;
-		if (major(dev) == mj && minor(dev) == mn) {
+		if (major(dev) == major && minor(dev) == minor) {
 			strcpy(devname, buf);
 			break;
 		}
@@ -321,15 +308,12 @@ get_device_name(char *devname, dev_t dev)
 
 out:
 	free(line);
-	fclose(fd);
+	fclose(fp);
 }
 
-
-static int
-get_blocksize(const char *device)
+static int get_blocksize(const char *device)
 {
-	int fd;
-	int size;
+	int size, fd;
 
 	fd = open(device, O_RDONLY);
 	if (fd == -1)
@@ -344,16 +328,16 @@ get_blocksize(const char *device)
 	return size;
 }
 
-
-static int
-create_temp_device_node(char *name, unsigned int major, unsigned int minor)
+static int create_temp_device_node(char *name, unsigned int major,
+				   unsigned int minor)
 {
-	int num;
 	const char path_base[] = "/dev";
 	char buf[PATH_MAX];
+	int num;
 
 	for (num = 0; num < 100; num++) {
-		snprintf(buf, sizeof(buf), "%s/zipl-dm-temp-%02d", path_base, num);
+		snprintf(buf, sizeof(buf),
+			 "%s/zipl-dm-temp-%02d", path_base, num);
 		if (access(buf, F_OK) == 0)
 			continue;
 		if (mknod(buf, S_IFBLK, makedev(major, minor)) != 0)
@@ -365,31 +349,29 @@ create_temp_device_node(char *name, unsigned int major, unsigned int minor)
 	return -1;
 }
 
-
-static int
-get_partition_start(unsigned int maj, unsigned int min)
+static int get_partition_start(unsigned int major, unsigned int minor)
 {
 	unsigned long val;
 
 	if (util_file_read_ul(&val, 10, "/sys/dev/block/%u:%u/start",
-			maj, min) != 0) {
+			      major, minor) != 0) {
 		return 0;
 	}
 	return val;
 }
 
-
-static int
-get_device_characteristics(struct device_characteristics *dc, dev_t dev)
+static int get_device_characteristics(struct device_characteristics *dc,
+				      dev_t dev)
 {
-	int res;
 	dasd_info_t info;
+	int res;
 
 	if (create_temp_device_node(info.device, major(dev), minor(dev)) != 0)
 		return -1;
 
 	res = dasd_get_info(&info);
-	if (res != 0) { // assume SCSI if dasdinfo failed
+	if (res != 0) {
+		/* Assume SCSI if dasdinfo failed */
 		int blocksize = get_blocksize(info.device);
 
 		if (blocksize < 0) {
@@ -399,7 +381,7 @@ get_device_characteristics(struct device_characteristics *dc, dev_t dev)
 		}
 		dc->blocksize = blocksize;
 		dc->type = DEV_TYPE_SCSI;
-		// first block contains IPL records
+		/* First block contains IPL records */
 		dc->bootsectors = dc->blocksize / SECTOR_SIZE;
 	} else {
 		unsigned int sectors = info.geo.sectors;
@@ -411,10 +393,12 @@ get_device_characteristics(struct device_characteristics *dc, dev_t dev)
 		} else if (strcmp(info.dasd_info.type, "ECKD") == 0) {
 			if (info.dasd_info.format == 1) {
 				dc->type = DEV_TYPE_LDL;
-				dc->bootsectors = dc->blocksize * 2 / SECTOR_SIZE;
+				dc->bootsectors = dc->blocksize * 2 /
+					SECTOR_SIZE;
 			} else if (info.dasd_info.format == 2) {
 				dc->type = DEV_TYPE_CDL;
-				dc->bootsectors = dc->blocksize * sectors / SECTOR_SIZE;
+				dc->bootsectors = dc->blocksize * sectors /
+					SECTOR_SIZE;
 			}
 		}
 		dc->geometry.cylinders = info.hw_cylinders;
@@ -428,63 +412,60 @@ get_device_characteristics(struct device_characteristics *dc, dev_t dev)
 	return 0;
 }
 
-
-static struct util_list *
-get_linear_data(const char *devname, char *args)
+static struct util_list *get_linear_data(const char *devname, char *args)
 {
+	unsigned int major, minor, start;
 	struct util_list *data;
-	unsigned int maj, min, start;
 
-	if (sscanf(args, "%u:%u %u", &maj, &min, &start) < 3) {
-		warnx("Unrecognized device-mapper table format "
-				"for device '%s'", devname);
+	if (sscanf(args, "%u:%u %u", &major, &minor, &start) < 3) {
+		warnx("Unrecognized device-mapper table format for device '%s'",
+		      devname);
 		return NULL;
 	}
 
 	data = util_list_new(struct target_data, list);
-	util_list_add_tail(data, target_data_new(maj, min, start));
+	util_list_add_tail(data, target_data_new(major, minor, start));
 
 	return data;
 }
 
-
-#define STR_TOKEN_OR_GOTO(string, tok, label)		\
-	do {											\
+#define STR_TOKEN_OR_GOTO(string, tok, label)				\
+	do {								\
 		char *tp = strtok(string, " ");				\
-		if (tp == NULL) {							\
-			goto label;								\
-		}											\
-		tok = tp;									\
+		if (tp == NULL) {					\
+			goto label;					\
+		}							\
+		tok = tp;						\
 	} while (0)
 
-#define NEXT_STR_TOKEN_OR_GOTO(tok, label)			\
+#define NEXT_STR_TOKEN_OR_GOTO(tok, label)				\
 	STR_TOKEN_OR_GOTO(NULL, tok, label)
 
-#define INT_TOKEN_OR_GOTO(string, tok, label)		\
-	do {											\
+#define INT_TOKEN_OR_GOTO(string, tok, label)				\
+	do {								\
 		char *tp = strtok(string, " ");				\
-		if (tp == NULL) {							\
-			goto label;								\
-		}											\
-		errno = 0;									\
-		tok = strtol(tp, NULL, 10);					\
-		if (((errno == ERANGE) &&					\
-			(tok == LONG_MIN || tok == LONG_MAX)) ||\
-			(errno != 0 && tok == 0)) {				\
-			goto label;								\
-		}											\
+		if (tp == NULL) {					\
+			goto label;					\
+		}							\
+		errno = 0;						\
+		tok = strtol(tp, NULL, 10);				\
+		if (((errno == ERANGE) &&				\
+			(tok == LONG_MIN || tok == LONG_MAX)) ||	\
+			(errno != 0 && tok == 0)) {			\
+			goto label;					\
+		}							\
 	} while (0)
 
-#define NEXT_INT_TOKEN_OR_GOTO(tok, label)			\
+#define NEXT_INT_TOKEN_OR_GOTO(tok, label)				\
 	INT_TOKEN_OR_GOTO(NULL, tok, label)
 
-#define SKIP_NEXT_TOKENS_OR_GOTO(count, label)		\
-	do {											\
+#define SKIP_NEXT_TOKENS_OR_GOTO(count, label)				\
+	do {								\
 		for (; count > 0; count--) {				\
 			if (strtok(NULL, " ") == NULL) {		\
-				goto label;							\
-			}										\
-		}											\
+				goto label;				\
+			}						\
+		}							\
 	} while (0)
 
 /*
@@ -496,29 +477,29 @@ get_linear_data(const char *devname, char *args)
  * <#devs> <device_name_1> <offset_1>...<device name N> <offset N> \
  * <#features> <feature_1>...<feature_N>
  */
-static struct util_list *
-get_mirror_data(const char *devname __attribute__((unused)), char *args)
+static struct util_list *get_mirror_data(const char *UNUSED(devname),
+					 char *args)
 {
-	char *token;
-	long nlogs, ndevs, nfeats;
 	struct util_list *data = util_list_new(struct target_data, list);
+	long nlogs, ndevs, nfeats;
+	char *token;
 
-	STR_TOKEN_OR_GOTO(args, token, out); // log_type
+	STR_TOKEN_OR_GOTO(args, token, out); /* log_type */
 
-	NEXT_INT_TOKEN_OR_GOTO(nlogs, out); // #log_args
-	SKIP_NEXT_TOKENS_OR_GOTO(nlogs, out); // log_args*
+	NEXT_INT_TOKEN_OR_GOTO(nlogs, out); /* #log_args */
+	SKIP_NEXT_TOKENS_OR_GOTO(nlogs, out); /* log_args* */
 
 	NEXT_INT_TOKEN_OR_GOTO(ndevs, out);
 	for (; ndevs > 0; ndevs--) {
 		char *name;
 		long offset;
-		unsigned int maj, min;
+		unsigned int major, minor;
 
 		NEXT_STR_TOKEN_OR_GOTO(name, out);
-		if (sscanf(name, "%u:%u", &maj, &min) < 2)
+		if (sscanf(name, "%u:%u", &major, &minor) < 2)
 			goto out;
 		NEXT_INT_TOKEN_OR_GOTO(offset, out);
-		util_list_add_tail(data, target_data_new(maj, min, offset));
+		util_list_add_tail(data, target_data_new(major, minor, offset));
 	}
 	NEXT_INT_TOKEN_OR_GOTO(nfeats, out);
 	SKIP_NEXT_TOKENS_OR_GOTO(nfeats, out);
@@ -530,9 +511,7 @@ out:
 	return NULL;
 }
 
-
-static struct target_status *
-target_status_new(const char *path, char status)
+static struct target_status *target_status_new(const char *path, char status)
 {
 	struct target_status *ts = util_malloc(sizeof(struct target_status));
 
@@ -542,15 +521,13 @@ target_status_new(const char *path, char status)
 	return ts;
 }
 
-static void
-target_status_free(struct target_status *ts)
+static void target_status_free(struct target_status *ts)
 {
 	free(ts->path);
 	free(ts);
 }
 
-static void
-status_list_free(struct util_list *status)
+static void status_list_free(struct util_list *status)
 {
 	struct target_status *ts, *n;
 
@@ -561,8 +538,7 @@ status_list_free(struct util_list *status)
 	util_list_free(status);
 }
 
-static char
-status_list_get_status(struct util_list *status, const char *node)
+static char status_list_get_status(struct util_list *status, const char *node)
 {
 	struct target_status *ts;
 
@@ -573,17 +549,15 @@ status_list_get_status(struct util_list *status, const char *node)
 	return 'F';
 }
 
-static struct util_list *
-get_multipath_status(const char *devname)
+static struct util_list *get_multipath_status(const char *devname)
 {
-	FILE *fp;
-	size_t n = 0;
+	struct util_list *status;
 	int len, failed = 0;
 	char *line = NULL;
-	struct util_list *status;
+	size_t n = 0;
+	FILE *fp;
 
-	fp = execute_command_and_get_output_stream(
-			"dmsetup status /dev/%s 2>/dev/null", devname);
+	fp = execute_command_and_get_output_stream("dmsetup status /dev/%s 2>/dev/null", devname);
 	if (fp == NULL) {
 		warnx("No paths found for '%s'", devname);
 		return NULL;
@@ -594,7 +568,7 @@ get_multipath_status(const char *devname)
 		long cnt, ngr, ign, length;
 		char *token = NULL;
 
-		/* sample output (single line):
+		/* Sample output (single line):
 		 * 0 67108864 multipath \
 		 * 2 0 0 \
 		 * 0 \
@@ -614,13 +588,13 @@ get_multipath_status(const char *devname)
 		 */
 		STR_TOKEN_OR_GOTO(line, token, out);
 		NEXT_INT_TOKEN_OR_GOTO(length, out);
-		NEXT_STR_TOKEN_OR_GOTO(token, out); // dtype
+		NEXT_STR_TOKEN_OR_GOTO(token, out); /* dtype */
 		if (strcmp(token, "multipath") != 0)
 			continue;
-		NEXT_INT_TOKEN_OR_GOTO(cnt, out); // #mp_feature_args
-		SKIP_NEXT_TOKENS_OR_GOTO(cnt, out); // mp_feature_args*
-		NEXT_INT_TOKEN_OR_GOTO(cnt, out); // #handler_status_args
-		SKIP_NEXT_TOKENS_OR_GOTO(cnt, out); // handler_status_args*
+		NEXT_INT_TOKEN_OR_GOTO(cnt, out); /* #mp_feature_args */
+		SKIP_NEXT_TOKENS_OR_GOTO(cnt, out); /* mp_feature_args* */
+		NEXT_INT_TOKEN_OR_GOTO(cnt, out); /* #handler_status_args */
+		SKIP_NEXT_TOKENS_OR_GOTO(cnt, out); /* handler_status_args* */
 
 		NEXT_INT_TOKEN_OR_GOTO(ngr, out);
 		NEXT_INT_TOKEN_OR_GOTO(ign, out);
@@ -628,8 +602,8 @@ get_multipath_status(const char *devname)
 			long npaths, nsa;
 
 			NEXT_STR_TOKEN_OR_GOTO(token, out);
-			NEXT_INT_TOKEN_OR_GOTO(cnt, out); // #ps_status_args
-			SKIP_NEXT_TOKENS_OR_GOTO(cnt, out); // ps_status_args*
+			NEXT_INT_TOKEN_OR_GOTO(cnt, out); /* #ps_status_args */
+			SKIP_NEXT_TOKENS_OR_GOTO(cnt, out); /* ps_status_args* */
 			NEXT_INT_TOKEN_OR_GOTO(npaths, out);
 			NEXT_INT_TOKEN_OR_GOTO(nsa, out);
 			for (; npaths > 0; npaths--) {
@@ -670,40 +644,39 @@ out:
 	return NULL;
 }
 
-static struct util_list *
-get_multipath_data(const char *devname, char *args)
+static struct util_list *get_multipath_data(const char *devname, char *args)
 {
-	char *token;
-	long cnt, pgroups;
 	struct util_list *data = util_list_new(struct target_data, list);
 	struct util_list *status = get_multipath_status(devname);
+	long cnt, pgroups;
+	char *token;
 
 	if (status == NULL)
 		goto out_status;
 
-	INT_TOKEN_OR_GOTO(args, cnt, out); // #feat
-	SKIP_NEXT_TOKENS_OR_GOTO(cnt, out); // feats*
-	NEXT_INT_TOKEN_OR_GOTO(cnt, out); // #handlers
-	SKIP_NEXT_TOKENS_OR_GOTO(cnt, out); // handlers*
+	INT_TOKEN_OR_GOTO(args, cnt, out); /* #feat */
+	SKIP_NEXT_TOKENS_OR_GOTO(cnt, out); /* feats* */
+	NEXT_INT_TOKEN_OR_GOTO(cnt, out); /* #handlers */
+	SKIP_NEXT_TOKENS_OR_GOTO(cnt, out); /* handlers* */
 	NEXT_INT_TOKEN_OR_GOTO(pgroups, out);
-	NEXT_STR_TOKEN_OR_GOTO(token, out); // pathgroup
+	NEXT_STR_TOKEN_OR_GOTO(token, out); /* pathgroup */
 	for (; pgroups > 0; pgroups--) {
 		long npaths;
 
-		NEXT_STR_TOKEN_OR_GOTO(token, out); //path_selector
-		NEXT_INT_TOKEN_OR_GOTO(cnt, out); // #selectorargs
+		NEXT_STR_TOKEN_OR_GOTO(token, out); /* path_selector */
+		NEXT_INT_TOKEN_OR_GOTO(cnt, out); /* #selectorargs */
 		SKIP_NEXT_TOKENS_OR_GOTO(cnt, out);
 		NEXT_INT_TOKEN_OR_GOTO(npaths, out);
-		NEXT_INT_TOKEN_OR_GOTO(cnt, out); // #np_args
+		NEXT_INT_TOKEN_OR_GOTO(cnt, out); /* #np_args */
 		for (; npaths > 0; npaths--) {
+			unsigned int major, minor;
 			char *path;
-			unsigned int maj, min;
 
 			NEXT_STR_TOKEN_OR_GOTO(path, out);
-			if (sscanf(path, "%u:%u", &maj, &min) < 2)
+			if (sscanf(path, "%u:%u", &major, &minor) < 2)
 				goto out;
 			if (status_list_get_status(status, path) == 'A')
-				util_list_add_tail(data, target_data_new(maj, min, 0));
+				util_list_add_tail(data, target_data_new(major, minor, 0));
 			SKIP_NEXT_TOKENS_OR_GOTO(cnt, out);
 		}
 	}
@@ -718,21 +691,19 @@ out_status:
 	return NULL;
 }
 
-
-static void
-table_free(struct util_list *table)
+static void table_free(struct util_list *table)
 {
-	struct target *t, *n;
+	struct target *target, *n;
 
-	util_list_iterate_safe(table, t, n) {
-		util_list_remove(table, t);
-		target_free(t);
+	util_list_iterate_safe(table, target, n) {
+		util_list_remove(table, target);
+		target_free(target);
 	}
 	util_list_free(table);
 }
 
-static void
-filter_table(struct util_list *table, unsigned int start, unsigned int length)
+static void filter_table(struct util_list *table, unsigned int start,
+			 unsigned int length)
 {
 	struct target *target, *n;
 
@@ -746,37 +717,34 @@ filter_table(struct util_list *table, unsigned int start, unsigned int length)
 }
 
 /*
- * Returns list of target devices
+ * Return list of target devices
  */
-static struct util_list *
-get_table(dev_t dev)
+static struct util_list *get_table(dev_t dev)
 {
-	FILE *fp;
-	size_t n = 0;
-	char *line = NULL;
 	char devname[BDEVNAME_SIZE];
 	struct util_list *table;
+	char *line = NULL;
+	size_t n = 0;
+	FILE *fp;
 
 	table = util_list_new(struct target, list);
 	if (table == NULL)
 		return NULL;
 
-	fp = execute_command_and_get_output_stream(
-			"dmsetup table -j %u -m %u 2>/dev/null", major(dev), minor(dev));
+	fp = execute_command_and_get_output_stream("dmsetup table -j %u -m %u 2>/dev/null", major(dev), minor(dev));
 	if (fp == NULL)
 		return table;
 
 	get_device_name(devname, dev);
 	while (getline(&line, &n, fp) != -1) {
-		unsigned long start, length;
-		unsigned short ttype;
 		char *type = NULL, *args = NULL;
 		struct util_list *data = NULL;
+		unsigned long start, length;
+		unsigned short ttype;
 
 		if (sscanf(line, "%lu %lu %ms %m[a-zA-Z0-9_: -]",
 					&start, &length, &type, &args) < 4) {
-			warnx("Unrecognized device-mapper table "
-					"format for device '%s'", devname);
+			warnx("Unrecognized device-mapper table format for device '%s'", devname);
 			goto out;
 		}
 
@@ -790,8 +758,7 @@ get_table(dev_t dev)
 			data = get_multipath_data(devname, args);
 			ttype = TARGET_TYPE_MULTIPATH;
 		} else {
-			warnx("Unsupported setup: Unsupported "
-					"device-mapper target type '%s' for device '%s'",
+			warnx("Unsupported setup: Unsupported device-mapper target type '%s' for device '%s'",
 					type, devname);
 		}
 		free(type);
@@ -814,30 +781,26 @@ out:
 }
 
 
-static inline bool
-is_dasd(unsigned short type)
+static bool is_dasd(unsigned short type)
 {
 	return (type == DEV_TYPE_CDL) || (type == DEV_TYPE_LDL) ||
 		(type == DEV_TYPE_FBA);
 }
 
-
-static int
-get_physical_device(struct physical_device *pd, dev_t dev,
-		const char *directory)
+static int get_physical_device(struct physical_device *pd, dev_t dev,
+			       const char *directory)
 {
+	struct util_list *target_list = NULL;
+	struct util_list *table = NULL;
 	unsigned int start, length;
 	struct target *target;
-	struct util_list *table = NULL;
-	struct util_list *target_list = NULL;
 
 	table = get_table(dev);
 	if (table == NULL || util_list_start(table) == NULL) {
 		char devname[BDEVNAME_SIZE];
 
 		get_device_name(devname, dev);
-		warnx("Could not retrieve device-mapper information "
-				"for device '%s'", devname);
+		warnx("Could not retrieve device-mapper information for device '%s'", devname);
 		if (table != NULL)
 			table_free(table);
 		return -1;
@@ -847,8 +810,7 @@ get_physical_device(struct physical_device *pd, dev_t dev,
 
 	/* Filesystem must be on a single dm target */
 	if (util_list_next(table, target) != NULL) {
-		warnx("Unsupported setup: Directory '%s' is "
-				"located on a multi-target device-mapper device",
+		warnx("Unsupported setup: Directory '%s' is located on a multi-target device-mapper device",
 				directory);
 		table_free(table);
 		return -1;
@@ -861,30 +823,29 @@ get_physical_device(struct physical_device *pd, dev_t dev,
 	start = target->start;
 	length = target->length;
 	while (true) {
-		unsigned int mmaj, mmin;
+		unsigned int major, minor;
 
-		/* convert fs_start to offset on parent dm device */
+		/* Convert fs_start to offset on parent dm device */
 		start += target_get_start(target);
-		target_get_major_minor(target, &mmaj, &mmin);
-		table = get_table(makedev(mmaj, mmin));
+		target_get_major_minor(target, &major, &minor);
+		table = get_table(makedev(major, minor));
 		/* Found non-dm device */
 		if (table == NULL || util_list_start(table) == NULL) {
-			pd->device = makedev(mmaj, mmin);
+			pd->device = makedev(major, minor);
 			pd->offset = start;
 			pd->target_list = target_list;
 			if (table != NULL)
 				table_free(table);
 			return 0;
 		}
-		/*
-		 * Get target in parent table which contains filesystem
-		 * We are interested only in targets between [start,start+length-1]
+		/* Get target in parent table which contains filesystem.
+		 * We are interested only in targets between
+		 * [start,start+length-1].
 		 */
 		filter_table(table, start, length);
 		target = util_list_start(table);
 		if (target == NULL || util_list_next(table, target) != NULL) {
-			warnx("Unsupported setup: Could not map  "
-					"directory '%s' to a single physical device",
+			warnx("Unsupported setup: Could not map directory '%s' to a single physical device",
 					directory);
 			table_free(table);
 			target_list_free(target_list);
@@ -892,16 +853,14 @@ get_physical_device(struct physical_device *pd, dev_t dev,
 		}
 		util_list_remove(table, target);
 		util_list_add_head(target_list,
-				target_entry_new(makedev(mmaj, mmin), target));
+				target_entry_new(makedev(major, minor), target));
 		table_free(table);
 		/* Convert fs_start to offset on parent target */
 		start -= target->start;
 	}
 }
 
-
-static inline int
-get_major_minor(dev_t *dev, const char *filename)
+static int get_major_minor(dev_t *dev, const char *filename)
 {
 	struct stat buf;
 
@@ -913,8 +872,8 @@ get_major_minor(dev_t *dev, const char *filename)
 	return 0;
 }
 
-static int
-get_physical_device_dir(struct physical_device *pd, const char *directory)
+static int get_physical_device_dir(struct physical_device *pd,
+				   const char *directory)
 {
 	dev_t dev;
 
@@ -924,15 +883,15 @@ get_physical_device_dir(struct physical_device *pd, const char *directory)
 }
 
 
-static int
-get_target_base(dev_t *base, dev_t bottom, unsigned int length,
-		struct util_list *target_list)
+static int get_target_base(dev_t *base, dev_t bottom, unsigned int length,
+			   struct util_list *target_list)
 {
-	dev_t top = bottom;
 	struct target_entry *te, *mirror;
+	dev_t top = bottom;
 
 	util_list_iterate(target_list, te) {
-		if ((te->target->start != 0) || (target_get_start(te->target) != 0) ||
+		if ((te->target->start != 0) ||
+		    (target_get_start(te->target) != 0) ||
 			(te->target->length < length)) {
 			break;
 		}
@@ -946,8 +905,7 @@ get_target_base(dev_t *base, dev_t bottom, unsigned int length,
 			char name[BDEVNAME_SIZE];
 
 			get_device_name(name, mirror->device);
-			warnx("Unsupported setup: Block 0 is not "
-					"mirrored in device '%s'", name);
+			warnx("Unsupported setup: Block 0 is not mirrored in device '%s'", name);
 			return -1;
 		}
 	}
@@ -956,26 +914,24 @@ get_target_base(dev_t *base, dev_t bottom, unsigned int length,
 	return 0;
 }
 
-
-static inline dev_t
-get_partition_base(unsigned short type, dev_t dev)
+static inline dev_t get_partition_base(unsigned short type, dev_t dev)
 {
 	return makedev(major(dev), minor(dev) &
 			(is_dasd(type) ? ~DASD_PARTN_MASK : ~SCSI_PARTN_MASK));
 }
 
 
-static int
-extract_major_minor_from_cmdline(int argc, char *argv[], unsigned int *maj,
-		unsigned int *min)
+static int extract_major_minor_from_cmdline(int argc, char *argv[],
+					    unsigned int *major,
+					    unsigned int *minor)
 {
-	int i;
 	char *cmdline = NULL;
+	int i;
 
 	for (i = 1; i < argc; i++)
 		cmdline = util_strcat_realloc(cmdline, argv[i]);
 
-	if (sscanf(cmdline, "%u:%u", maj, min) != 2) {
+	if (sscanf(cmdline, "%u:%u", major, minor) != 2) {
 		free(cmdline);
 		return -1;
 	}
@@ -985,8 +941,7 @@ extract_major_minor_from_cmdline(int argc, char *argv[], unsigned int *maj,
 }
 
 
-static inline bool
-toolname_is_chreipl_helper(const char *toolname)
+static bool toolname_is_chreipl_helper(const char *toolname)
 {
 	int tlen = strlen(toolname);
 	int clen = strlen(CHREIPL_HELPER);
@@ -998,8 +953,7 @@ toolname_is_chreipl_helper(const char *toolname)
 }
 
 
-void
-print_usage(const char *toolname)
+void print_usage(const char *toolname)
 {
 	fprintf(stderr, "%s <major:minor of target device>", toolname);
 	if (!toolname_is_chreipl_helper(toolname))
@@ -1008,29 +962,27 @@ print_usage(const char *toolname)
 }
 
 
-int
-main(int argc, char *argv[])
+int main(int argc, char *argv[])
 {
-	int res;
-	dev_t base;
-	unsigned int maj, min;
-	char type_name[8];
-	char *directory = NULL;
+	struct device_characteristics dc = {0};
 	const char *toolname = argv[0];
 	struct physical_device pd;
-	struct device_characteristics dc = {0};
+	unsigned int major, minor;
+	char *directory = NULL;
+	char type_name[8];
+	dev_t base;
+	int res;
 
 	if (argc == 1)
 		goto usage;
 
-	if (setlocale(LC_ALL, "C") == NULL) {
+	if (setlocale(LC_ALL, "C") == NULL)
 		errx(EXIT_FAILURE, "Could not use standard locale");
-	}
 
 	if (toolname_is_chreipl_helper(toolname)) {
-		if (extract_major_minor_from_cmdline(argc, argv, &maj, &min) != 0)
+		if (extract_major_minor_from_cmdline(argc, argv, &major, &minor) != 0)
 			goto usage;
-		if (get_physical_device(&pd, makedev(maj, min), argv[1]) != 0)
+		if (get_physical_device(&pd, makedev(major, minor), argv[1]) != 0)
 			exit(EXIT_FAILURE);
 		printf("%u:%u\n", major(pd.device), minor(pd.device));
 		target_list_free(pd.target_list);
@@ -1038,8 +990,8 @@ main(int argc, char *argv[])
 	}
 
 	directory = argv[1];
-	if (extract_major_minor_from_cmdline(argc, argv, &maj, &min) == 0)
-		res = get_physical_device(&pd, makedev(maj, min), directory);
+	if (extract_major_minor_from_cmdline(argc, argv, &major, &minor) == 0)
+		res = get_physical_device(&pd, makedev(major, minor), directory);
 	else if (argc == 2)
 		res = get_physical_device_dir(&pd, directory);
 	else
@@ -1053,11 +1005,12 @@ main(int argc, char *argv[])
 
 	/* Handle partitions */
 	if (dc.partstart > 0) {
-		struct target_entry *mirror;
 		struct device_characteristics ndc = {0};
+		struct target_entry *mirror;
 
-		/* Only the partition of the physical device is mapped so only the
-		 * physical device can provide access to the boot record */
+		/* Only the partition of the physical device is mapped so only
+		 * the physical device can provide access to the boot record
+		 */
 		base = get_partition_base(dc.type, pd.device);
 		/* Check for mirror */
 		mirror = target_list_get_first_by_type(
@@ -1066,7 +1019,7 @@ main(int argc, char *argv[])
 			char name[BDEVNAME_SIZE];
 
 			get_device_name(name, mirror->device);
-			// IPL records are not mirrored
+			/* IPL records are not mirrored */
 			warnx("Unsupported setup: Block 0 is not "
 					"mirrored in device '%s'", name);
 			goto error;
@@ -1078,8 +1031,9 @@ main(int argc, char *argv[])
 		get_device_characteristics(&ndc, base);
 		dc.geometry = ndc.geometry;
 	} else {
-		/* All of the device is mapped, so the base device is the top most dm
-		 * device which provides access to boot sectors */
+		/* All of the device is mapped, so the base device is the
+		 * top most dm device which provides access to boot sectors
+		 */
 		if (get_target_base(
 					&base, pd.device, dc.bootsectors, pd.target_list) != 0)
 			goto error;
